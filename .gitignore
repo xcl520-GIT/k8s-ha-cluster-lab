@@ -1,0 +1,53 @@
+# ---------- 系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 密钥与凭据（绝对不能提交）----------
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*kubeconfig*
+admin.conf
+!*.crt.example
+.env
+.env.*
+!.env.example
+secrets/
+!secrets/.gitkeep
+
+# 本地凭据文件（真实口令只存在工作站上，永不入库）
+CREDENTIALS*
+CREDENTIALS-local.md
+cr-*.md
+*凭据*.md
+
+# ---------- 备份产物（体积大，不入库）----------
+backup/
+*.db
+*.tar.gz
+*.tar
+etcd-*.db
+
+# ---------- 日志 ----------
+*.log
+logs/
+journal/
+
+# ---------- 编辑器 ----------
+.vscode/
+.idea/
+*.swp
+*~
+
+# ---------- 临时文件 ----------
+*.tmp
+*.bak
+tmp/
+.tmp-*/
+
+# 临时演练报告（不入库）
+.vm-reports/
+
