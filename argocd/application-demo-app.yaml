@@ -1,0 +1,53 @@
+# ============================================================
+# Argo CD Application: the Git repository IS the desired state.
+# Nothing in apps/demo-app/ is ever applied by hand again.
+#
+# SOURCE OF TRUTH vs SOURCE OF SYNC
+#   The public repository on GitHub is the source of truth:
+#     https://github.com/xcl520-GIT/k8s-ha-cluster-lab
+#   But github.com is only reachable from this lab about 80% of the
+#   time, which leaves the Application stuck at sync status "Unknown"
+#   at random. So the cluster syncs from an internal mirror on the
+#   control-plane node instead:
+#     git init --bare /srv/git/k8s-ha-cluster-lab.git   (see scripts/gitops/04-internal-git-mirror.sh)
+#     systemctl enable --now git-daemon                  (git://192.168.16.11:9418)
+#   The workstation pushes to BOTH remotes (origin = GitHub, lab = mirror).
+#   This is the standard answer to a restricted-egress network.
+#
+#   To go back to syncing straight from GitHub, set:
+#     repoURL: https://github.com/xcl520-GIT/k8s-ha-cluster-lab.git
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-app
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: git://192.168.16.11/k8s-ha-cluster-lab.git
+    targetRevision: main
+    path: apps/demo-app
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gitops-demo
+
+  syncPolicy:
+    automated:
+      prune: true       # delete resources that were removed from git
+      selfHeal: true    # revert any manual drift in the cluster
+      allowEmpty: false
+    syncOptions:
+    - CreateNamespace=true
+    - PrunePropagationPolicy=foreground
+    - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

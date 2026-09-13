@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: gitops-demo
+  labels:
+    app: demo-app
+  annotations:
+    # Argo CD self-heal demo target: change this file in git and watch the
+    # live cluster converge without a single kubectl command.
+    argocd.argoproj.io/managed: "true"
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: demo-app
+  template:
+    metadata:
+      labels:
+        app: demo-app
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: demo-app
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: demo-app
+        image: nginx:1.27-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 80
+        envFrom:
+        - configMapRef:
+            name: demo-app-config
+        readinessProbe:
+          httpGet: {path: /, port: 80}
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: {path: /, port: 80}
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          # Drop EVERY capability, then hand back only what nginx provably needs.
+          # Learned the hard way on this very cluster: with a bare
+          # `drop: [ALL]` nginx dies at startup with
+          #   [emerg] chown("/var/cache/nginx/client_temp", 101) failed (1: Operation not permitted)
+          # because the entrypoint cannot chown its cache dirs (CHOWN) or drop
+          # privileges to the worker user (SETGID/SETUID), and cannot bind :80
+          # (NET_BIND_SERVICE). DAC_OVERRIDE covers writing files it does not own.
+          capabilities:
+            drop: [ALL]
+            add: [CHOWN, DAC_OVERRIDE, SETGID, SETUID, NET_BIND_SERVICE]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: demo-app-pdb
+  namespace: gitops-demo
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: demo-app
