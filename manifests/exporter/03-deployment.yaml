@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lab-exporter
+  namespace: monitoring
+  labels:
+    app: lab-exporter
+    app.kubernetes.io/name: lab-exporter
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: lab-exporter
+  template:
+    metadata:
+      labels:
+        app: lab-exporter
+        app.kubernetes.io/name: lab-exporter
+    spec:
+      serviceAccountName: lab-exporter
+      # The PKI directory and the etcd backup directory only exist on the
+      # control-plane node, so this pod is pinned there and tolerates the
+      # control-plane taint. That is a real constraint, not an oversight.
+      nodeSelector:
+        kubernetes.io/hostname: k8s-master01
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      securityContext:
+        runAsUser: 65534
+        runAsNonRoot: true
+      containers:
+      - name: lab-exporter
+        # Static CGO_ENABLED=0 binary built by 02-build-job.yaml; alpine is
+        # just a tiny carrier - no runtime dependency on it.
+        image: alpine:3.20
+        imagePullPolicy: IfNotPresent
+        command: ["/opt/lab-exporter"]
+        env:
+        - {name: LISTEN_ADDR, value: ":9101"}
+        - {name: PKI_DIR, value: "/host-pki"}
+        - {name: BACKUP_DIR, value: "/host-etcd-backups"}
+        ports:
+        - name: metrics
+          containerPort: 9101
+        readinessProbe:
+          httpGet: {path: /healthz, port: 9101}
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: {path: /healthz, port: 9101}
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: 20m
+            memory: 24Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        volumeMounts:
+        - {name: out, mountPath: /opt}
+        - {name: pki, mountPath: /host-pki, readOnly: true}
+        - {name: etcd-backups, mountPath: /host-etcd-backups, readOnly: true}
+      volumes:
+      - name: out
+        persistentVolumeClaim:
+          claimName: lab-exporter-out
+      - name: pki
+        hostPath:
+          path: /etc/kubernetes/pki
+          type: Directory
+      - name: etcd-backups
+        hostPath:
+          path: /var/backups/etcd
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lab-exporter
+  namespace: monitoring
+  labels:
+    app: lab-exporter
+    app.kubernetes.io/name: lab-exporter
+spec:
+  selector:
+    app: lab-exporter
+  ports:
+  - name: metrics
+    port: 9101
+    targetPort: metrics

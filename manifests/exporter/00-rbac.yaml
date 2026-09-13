@@ -1,0 +1,38 @@
+# lab-exporter reads cluster objects read-only. It never writes anything,
+# and it never needs secrets - only object metadata.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lab-exporter
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lab-exporter
+rules:
+- apiGroups: [""]
+  resources: [nodes, pods]
+  verbs: [get, list]
+- apiGroups: [apps]
+  resources: [deployments]
+  verbs: [get, list]
+- apiGroups: [policy]
+  resources: [poddisruptionbudgets]
+  verbs: [get, list]
+- apiGroups: [""]
+  resources: [persistentvolumes]
+  verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lab-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lab-exporter
+subjects:
+- kind: ServiceAccount
+  name: lab-exporter
+  namespace: monitoring

@@ -1,0 +1,87 @@
+# =============================================================================
+# Build the exporter INSIDE the cluster.
+#
+# Why not a normal CI-built image? Because this lab's only image registry
+# (192.168.16.60) has been decommissioned and docker is not part of the data
+# path any more. Rather than block on a registry, we compile with the official
+# golang image and drop the static binary onto a shared PVC that the runtime
+# Deployment mounts.
+#
+# In a real pipeline this Job is replaced by:
+#   docker buildx build --platform linux/amd64 -t <registry>/lab-exporter:v1.0.0 .
+#   docker push <registry>/lab-exporter:v1.0.0
+# and the Deployment just references that tag.
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lab-exporter-build
+  namespace: monitoring
+  labels:
+    app: lab-exporter
+    role: build
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: lab-exporter
+        role: build
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: build
+        image: golang:1.23-alpine
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -eu
+          echo "== toolchain =="
+          go version
+          # The source ConfigMap is mounted read-only; copy to a writable dir.
+          mkdir -p /work /out /cache/go-build /cache/go-mod
+          cp /src/main.go /src/go.mod /work/
+          cd /work
+          echo "== offline by design: no module proxy, no external imports =="
+          export CGO_ENABLED=0
+          export GOFLAGS=-mod=mod
+          export GOPROXY=off
+          export GOCACHE=/cache/go-build
+          export GOMODCACHE=/cache/go-mod
+          echo "== gofmt check =="
+          gofmt -l . || true
+          echo "== vet =="
+          go vet ./...
+          echo "== build =="
+          go build -trimpath -ldflags "-s -w -X main.version=1.0.0" -o /out/lab-exporter .
+          ls -lh /out/lab-exporter
+          file /out/lab-exporter 2>/dev/null || true
+          echo "== smoke test of the built binary =="
+          PKI_DIR=/nonexistent BACKUP_DIR=/nonexistent LISTEN_ADDR=:19101 /out/lab-exporter &
+          sleep 2
+          wget -qO- http://127.0.0.1:19101/healthz && echo "healthz OK"
+          wget -qO- http://127.0.0.1:19101/metrics | grep -c '^lab_' | xargs echo "lab_* metric lines:"
+          kill %1 2>/dev/null || true
+          echo "== BUILD COMPLETE =="
+        resources:
+          requests:
+            cpu: 300m
+            memory: 384Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        volumeMounts:
+        - {name: src, mountPath: /src, readOnly: true}
+        - {name: out, mountPath: /out}
+        - {name: cache, mountPath: /cache}
+      volumes:
+      - name: src
+        configMap:
+          name: lab-exporter-src
+      - name: out
+        persistentVolumeClaim:
+          claimName: lab-exporter-out
+      - name: cache
+        emptyDir: {}

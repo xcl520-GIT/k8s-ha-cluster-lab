@@ -1,0 +1,13 @@
+# Build output lives on NFS so the build Job and the runtime Deployment can
+# share it even if they land on different nodes => ReadWriteMany, not RWO.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lab-exporter-out
+  namespace: monitoring
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: nfs-dynamic
+  resources:
+    requests:
+      storage: 1Gi
