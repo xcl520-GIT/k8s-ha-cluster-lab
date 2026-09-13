@@ -1,0 +1,345 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      scrape_timeout: 10s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: k8s-ha-cluster-lab
+        monitor: prometheus
+
+    alerting:
+      alertmanagers:
+      - static_configs:
+        - targets: ["alertmanager.monitoring.svc.cluster.local:9093"]
+
+    rule_files:
+    - /etc/prometheus/rules/*.yaml
+
+    scrape_configs:
+
+    # ---------------------------------------------------------------
+    # 1. Prometheus scrapes itself
+    # ---------------------------------------------------------------
+    - job_name: prometheus
+      static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          component: prometheus
+
+    # ---------------------------------------------------------------
+    # 2. Control plane - kube-apiserver (discovered through the
+    #    default/kubernetes Service endpoints, so it survives a
+    #    control-plane IP change)
+    # ---------------------------------------------------------------
+    - job_name: kubernetes-apiservers
+      kubernetes_sd_configs:
+      - role: endpoints
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: default;kubernetes;https
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+
+    # ---------------------------------------------------------------
+    # 3. Kubelet /metrics  (scraped through the apiserver proxy so we
+    #    do not need kubelet client certificates)
+    # ---------------------------------------------------------------
+    - job_name: kubernetes-nodes
+      kubernetes_sd_configs:
+      - role: node
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/$1/proxy/metrics
+
+    # ---------------------------------------------------------------
+    # 4. cAdvisor - per-container CPU / memory / network, also via the
+    #    apiserver proxy. This is what powers per-pod resource panels.
+    # ---------------------------------------------------------------
+    - job_name: kubernetes-nodes-cadvisor
+      kubernetes_sd_configs:
+      - role: node
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+
+    # ---------------------------------------------------------------
+    # 5. node-exporter DaemonSet (hostNetwork) - address is the node IP
+    # ---------------------------------------------------------------
+    - job_name: node-exporter
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [monitoring]
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        regex: node-exporter
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_host_ip]
+        target_label: __address__
+        replacement: $1:9100
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
+    # ---------------------------------------------------------------
+    # 6. kube-state-metrics
+    # ---------------------------------------------------------------
+    - job_name: kube-state-metrics
+      kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [monitoring]
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: kube-state-metrics;http-metrics
+
+    # ---------------------------------------------------------------
+    # 7. lab-exporter - our own zero-dependency Go exporter (project P5).
+    #    It closes the gaps that node-exporter and kube-state-metrics
+    #    cannot see: control-plane certificate expiry, etcd backup
+    #    freshness, PDB maintenance deadlocks, Released PVs.
+    # ---------------------------------------------------------------
+    - job_name: lab-exporter
+      kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [monitoring]
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: lab-exporter;metrics
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
+    # ---------------------------------------------------------------
+    # NOTE - why kube-controller-manager / kube-scheduler / etcd are
+    # NOT scraped here: kubeadm binds them to 127.0.0.1
+    # (10257 / 10259 / 2379) on the control-plane node, so they are not
+    # reachable from a pod network. Scraping them requires either
+    # hostNetwork on those pods or shipping the control-plane PKI into
+    # the monitoring namespace. Deliberately out of scope for this lab.
+    # ---------------------------------------------------------------
+  kubernetes-alerts.yaml: |
+    groups:
+    - name: lab.targets
+      rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Scrape target {{ $labels.job }}/{{ $labels.instance }} is down"
+          description: "Prometheus has failed to scrape {{ $labels.job }} on {{ $labels.instance }} for more than 1 minute."
+      - alert: KubeletDown
+        expr: up{job="kubernetes-nodes"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "kubelet on {{ $labels.node }} is unreachable for 2m"
+
+    - name: lab.kubernetes
+      rules:
+      - alert: KubeNodeNotReady
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Node {{ $labels.node }} has been NotReady for 2m"
+          description: "A NotReady node still bills you but serves nothing. Check kubelet, CRI and the CNI."
+      - alert: KubePodCrashLooping
+        expr: max_over_time(kube_pod_container_status_restarts_total[5m]) - min_over_time(kube_pod_container_status_restarts_total[5m]) > 2
+        for: 2m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is restarting repeatedly"
+          description: "Container {{ $labels.container }} restarted more than 2 times in 5 minutes."
+      - alert: KubeDeploymentReplicasMismatch
+        expr: kube_deployment_spec_replicas != kube_deployment_status_replicas_available
+        for: 5m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} cannot reach its desired replica count"
+      - alert: KubePodNotReady
+        expr: sum by (namespace, pod) (kube_pod_status_phase{phase=~"Pending|Unknown|Failed"}) > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: app
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} stuck in {{ $labels.phase }} for 10m"
+      - alert: KubePersistentVolumeFillingUp
+        expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is below 15% free"
+
+    - name: lab.node
+      rules:
+      - alert: NodeHighCpuLoad
+        expr: 100 - (avg by (node) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Node {{ $labels.node }} CPU > 80% for 5m (current {{ printf \"%.1f\" $value }}%)"
+      - alert: NodeHighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Node {{ $labels.node }} memory > 85% for 5m (current {{ printf \"%.1f\" $value }}%)"
+      - alert: NodeFilesystemAlmostFull
+        expr: (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|ramfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|ramfs|overlay"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Filesystem {{ $labels.device }} on {{ $labels.node }} is above 85% used"
+      - alert: HostOomKillDetected
+        expr: increase(node_vmstat_oom_kill[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "OOM kill detected on {{ $labels.node }} in the last 10 minutes"
+      - alert: NodeClockSkew
+        expr: abs(node_timex_offset_seconds) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Clock on {{ $labels.node }} is skewed by more than 50ms"
+
+    # -----------------------------------------------------------------
+    # Rules that only exist because of our own exporter (project P5).
+    # These are the things that silently bite you months later.
+    # -----------------------------------------------------------------
+    - name: lab.customexporter
+      rules:
+      - alert: EtcdBackupMissing
+        expr: lab_etcd_backup_configured == 0
+        for: 15m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "No usable etcd snapshot exists on the control-plane node"
+          description: "If etcd dies now there is nothing to restore from. Fix the backup job first."
+      - alert: EtcdBackupTooOld
+        expr: lab_etcd_backup_age_seconds > 86400
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Newest etcd snapshot is {{ printf \"%.1f\" $value }} seconds old (> 24h)"
+          description: "Restore point is further away than the acceptable RPO."
+      - alert: CertificateExpiringSoon
+        expr: lab_certificate_expiry_days < 30
+        for: 1h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Certificate {{ $labels.certificate }} expires in {{ printf \"%.1f\" $value }} days"
+          description: "Run: kubeadm certs renew all, then rebuild the static pods."
+      - alert: CertificateAlreadyExpired
+        expr: lab_certificate_expiry_days < 0
+        for: 0m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Certificate {{ $labels.certificate }} has already expired"
+      - alert: PdbMaintenanceDeadlock
+        expr: lab_pdb_blocked == 1
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          # NOTE: must be exported_namespace, NOT namespace.
+          # lab-exporter emits its own `namespace` label (the PDB's namespace),
+          # but the scrape target also carries `namespace` = the exporter pod's
+          # namespace (monitoring). Prometheus resolves that collision by renaming
+          # the SAMPLE's label to `exported_namespace` and keeping the target's.
+          # Using $labels.namespace here produced "PDB monitoring/ha-web-pdb" for a
+          # PDB that actually lives in pdb-lab - a wrong-namespace alert, caught by
+          # reading the fired alert text instead of just trusting the dashboard.
+          summary: "PDB {{ $labels.exported_namespace }}/{{ $labels.pdb }} allows 0 disruptions"
+          description: "A node drain will be refused. Scale up or relax the PDB before maintenance."
+      - alert: LabExporterBlind
+        expr: lab_exporter_collector_error{collector="cluster"} == 1
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "lab-exporter cannot read the Kubernetes API - monitoring has a blind spot"
+      - alert: PersistentVolumeStuckReleased
+        expr: lab_pv_released_total > 0
+        for: 1h
+        labels:
+          severity: info
+          team: platform
+        annotations:
+          summary: "{{ $value }} PV(s) stuck in Released - data still on disk under Retain, reclaim deliberately"

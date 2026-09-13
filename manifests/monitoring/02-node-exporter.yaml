@@ -1,0 +1,85 @@
+# node-exporter: host-level metrics for every node (CPU / mem / disk / net / fs).
+# hostNetwork=true so Prometheus can reach it at <nodeIP>:9100 without a Service hop.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+    spec:
+      hostNetwork: true
+      hostPID: true
+      hostIPC: false
+      priorityClassName: system-node-critical
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: node-exporter
+        image: quay.io/prometheus/node-exporter:v1.8.2
+        imagePullPolicy: IfNotPresent
+        args:
+        - --path.procfs=/host/proc
+        - --path.sysfs=/host/sys
+        - --path.rootfs=/host/root
+        - --web.listen-address=:9100
+        - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/kubelet/pods|run)(/|$)
+        - --collector.netclass.ignored-devices=^(veth.*|cali.*|docker.*|br-.*|tunl0)$
+        - --collector.netdev.device-exclude=^(veth.*|cali.*|docker.*|br-.*)$
+        ports:
+        - name: metrics
+          containerPort: 9100
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 250m
+            memory: 128Mi
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        volumeMounts:
+        - {name: proc, mountPath: /host/proc, readOnly: true}
+        - {name: sys, mountPath: /host/sys, readOnly: true}
+        - {name: root, mountPath: /host/root, readOnly: true, mountPropagation: HostToContainer}
+      volumes:
+      - name: proc
+        hostPath: {path: /proc}
+      - name: sys
+        hostPath: {path: /sys}
+      - name: root
+        hostPath: {path: /}
+---
+# Headless Service: gives the pod-SD a stable DNS name and a place to hang scrape annotations.
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter
+  namespace: monitoring
+  labels:
+    app: node-exporter
+spec:
+  clusterIP: None
+  selector:
+    app: node-exporter
+  ports:
+  - name: metrics
+    port: 9100
+    targetPort: 9100
