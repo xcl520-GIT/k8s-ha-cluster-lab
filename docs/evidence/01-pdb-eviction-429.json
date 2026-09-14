@@ -1,0 +1,24 @@
+# Evidence 01 - PDB refuses eviction (raw HTTP 429 body)
+
+> source: .vm-reports/P1-04-scheduling-metrics-quota.txt  (raw log kept local, not committed)
+> purpose: the UNEDITED output behind a result quoted in README / docs/demo.
+
+--- POST /api/v1/namespaces/pdb-lab/pods/ha-web-67f4768978-fs22t/eviction ---
+{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {},
+  "status": "Failure",
+  "message": "Cannot evict pod as it would violate the pod's disruption budget.",
+  "reason": "TooManyRequests",
+  "details": {
+    "causes": [
+      {
+        "reason": "DisruptionBudget",
+        "message": "The disruption budget ha-web-pdb needs 3 healthy pods and has 3 currently"
+      }
+    ]
+  },
+  "code": 429
+}
+HTTP_STATUS=429

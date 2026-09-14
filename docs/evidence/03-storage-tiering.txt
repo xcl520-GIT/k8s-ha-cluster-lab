@@ -1,0 +1,62 @@
+# Evidence 03 - data tiering 22.0 MB of hot logs -> 60.0 KB of gzip archives
+
+> source: .vm-reports/P1-06-storage.txt  (raw log kept local, not committed)
+> purpose: the UNEDITED output behind a result quoted in README / docs/demo.
+
+==================== 6b. Data lifecycle tiering (redo, deterministic) ====================
+--- seed 5 x 2.4MiB compressible 'hot' logs, aged to 2020-01-01 ---
+BEFORE (hot tier):
+total 22528
+-rw-r--r--    1 nobody   nobody     3080000 Jan  1  2020 app-log-1.log
+-rw-r--r--    1 nobody   nobody     3080000 Jan  1  2020 app-log-2.log
+-rw-r--r--    1 nobody   nobody     3080000 Jan  1  2020 app-log-3.log
+-rw-r--r--    1 nobody   nobody     3080000 Jan  1  2020 app-log-4.log
+-rw-r--r--    1 nobody   nobody     3080000 Jan  1  2020 app-log-5.log
+22.0M	/data/hot
+0	/data/warm
+0	/data/cold
+
+--- trigger the tiering CronJob ---
+job.batch/tier-run-2 created
+job.batch/tier-run-2 condition met
+
+--- CronJob run log ---
+run=2026-09-13T10:26:58Z tiered_files=5
+hot=0 warm=5 cold=5
+0	/data/hot
+22.0M	/data/warm
+60.0K	/data/cold
+
+--- [LANDMARK F] AFTER: hot emptied, warm keeps originals, cold holds gzip archives ---
+hot  : 0 files
+warm : 5 files
+cold : 5 files
+--- ls ---
+/data/cold:
+total 60
+-rw-r--r--    1 nobody   nobody       10574 Sep 13 10:26 app-log-1.log.gz
+-rw-r--r--    1 nobody   nobody       10574 Sep 13 10:26 app-log-2.log.gz
+-rw-r--r--    1 nobody   nobody       10574 Sep 13 10:26 app-log-3.log.gz
+-rw-r--r--    1 nobody   nobody       10574 Sep 13 10:26 app-log-4.log.gz
+-rw-r--r--    1 nobody   nobody       10574 Sep 13 10:26 app-log-5.log.gz
+
+/data/hot:
+total 0
+
+/data/warm:
+total 22528
+-rw-r--r--    1 nobody   nobody     3080000 Jan  1  2020 app-log-1.log
+-rw-r--r--    1 nobody   nobody     3080000 Jan  1  2020 app-log-2.log
+-rw-r--r--    1 nobody   nobody     3080000 Jan  1  2020 app-log-3.log
+-rw-r--r--    1 nobody   nobody     3080000 Jan  1  2020 app-log-4.log
+-rw-r--r--    1 nobody   nobody     3080000 Jan  1  2020 app-log-5.log
+--- tier sizes ---
+0	/data/hot
+22.0M	/data/warm
+60.0K	/data/cold
+--- gzip integrity check ---
+OK  /data/cold/app-log-1.log.gz  -> 
+OK  /data/cold/app-log-2.log.gz  -> 
+OK  /data/cold/app-log-3.log.gz  -> 
+OK  /data/cold/app-log-4.log.gz  -> 
+OK  /data/cold/app-log-5.log.gz  -> 

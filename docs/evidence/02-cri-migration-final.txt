@@ -1,0 +1,17 @@
+# Evidence 02 - all three nodes on containerd://2.2.6, zero unhealthy pods
+
+> source: .vm-reports/P1-07-cri-migration-FINAL.txt  (raw log kept local, not committed)
+> purpose: the UNEDITED output behind a result quoted in README / docs/demo.
+
+--- [LANDMARK] every node now reports the containerd runtime ---
+NAME           STATUS   ROLES           AGE   VERSION    INTERNAL-IP     EXTERNAL-IP   OS-IMAGE                        KERNEL-VERSION                      CONTAINER-RUNTIME
+k8s-master01   Ready    control-plane   49d   v1.34.10   192.168.16.11   <none>        Rocky Linux 10.2 (Red Quartz)   6.12.0-211.16.1.el10_2.0.1.x86_64   containerd://2.2.6
+k8s-node01     Ready    <none>          48d   v1.34.10   192.168.16.12   <none>        Rocky Linux 10.2 (Red Quartz)   6.12.0-211.16.1.el10_2.0.1.x86_64   containerd://2.2.6
+k8s-node02     Ready    <none>          48d   v1.34.10   192.168.16.13   <none>        Rocky Linux 10.2 (Red Quartz)   6.12.0-211.16.1.el10_2.0.1.x86_64   containerd://2.2.6
+
+--- node runtime + container runtime version ---
+NODE           RUNTIME              CGROUP     OS
+k8s-master01   containerd://2.2.6   v1.34.10   Rocky Linux 10.2 (Red Quartz)
+k8s-node01     containerd://2.2.6   v1.34.10   Rocky Linux 10.2 (Red Quartz)
+k8s-node02     containerd://2.2.6   v1.34.10   Rocky Linux 10.2 (Red Quartz)
+
